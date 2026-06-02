@@ -41,12 +41,22 @@ def load_market_profile(ticker: str, cache_dir: Path) -> dict[str, Any]:
         profile["errors"].append(f"fundamental:{exc}")
 
     try:
-        profile["institutional"] = _institutional_profile(code, market, cache_dir)
+        profile["institutional"] = _with_profile_history(
+            _institutional_profile(code, market, cache_dir),
+            code,
+            "institutional",
+            cache_dir,
+        )
     except Exception as exc:
         profile["errors"].append(f"institutional:{exc}")
 
     try:
-        profile["margin"] = _margin_profile(code, market, cache_dir)
+        profile["margin"] = _with_profile_history(
+            _margin_profile(code, market, cache_dir),
+            code,
+            "margin",
+            cache_dir,
+        )
     except Exception as exc:
         profile["errors"].append(f"margin:{exc}")
 
@@ -202,6 +212,45 @@ def _chip_profile(code: str, cache_dir: Path) -> dict[str, Any]:
         "thousand_lot_holders": _to_number(thousand_plus.get("人數")),
         "thousand_lot_ratio": _to_number(thousand_plus.get("占集保庫存數比例%")),
     }
+
+
+def _with_profile_history(profile: dict[str, Any], code: str, category: str, cache_dir: Path) -> dict[str, Any]:
+    if not profile:
+        return profile
+    date = profile.get("date")
+    if not date:
+        profile["history"] = []
+        return profile
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    history_path = cache_dir / f"{code}_{category}_history.json"
+    try:
+        history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else []
+    except json.JSONDecodeError:
+        history = []
+    history = history if isinstance(history, list) else []
+
+    fields = {
+        "institutional": ["source", "date", "foreign_net", "investment_trust_net", "dealer_net", "total_net"],
+        "margin": [
+            "source",
+            "date",
+            "margin_balance",
+            "margin_change",
+            "margin_usage_rate",
+            "short_balance",
+            "short_change",
+            "short_usage_rate",
+            "short_margin_ratio",
+        ],
+    }.get(category, ["source", "date"])
+    current = {field: profile.get(field) for field in fields}
+    merged = [row for row in history if isinstance(row, dict) and row.get("date") != date]
+    merged.append(current)
+    merged = sorted(merged, key=lambda row: str(row.get("date") or ""), reverse=True)[:60]
+    history_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    profile["history"] = merged
+    return profile
 
 
 def _fetch_json(key: str, url: str, cache_dir: Path, verify: bool = True) -> Any:

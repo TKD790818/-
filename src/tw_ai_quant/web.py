@@ -1424,6 +1424,8 @@ def _market_profile(
     institutional = external.get("institutional") if isinstance(external.get("institutional"), dict) else {}
     margin_data = external.get("margin") if isinstance(external.get("margin"), dict) else {}
     chips = external.get("chips") if isinstance(external.get("chips"), dict) else {}
+    institutional_history = _institutional_history(institutional)
+    margin_history = _margin_history(margin_data)
 
     return [
         _profile_card(
@@ -1431,24 +1433,24 @@ def _market_profile(
             "均線、動能、突破條件",
             [
                 _profile_row("收盤價", _display(close, 2), "最新行情基準", "neutral"),
-                _profile_row("MA20 / MA60 / MA120", f"{_display(sma20, 2)} / {_display(sma60, 2)} / {_display(sma120, 2)}", "加入 120 日長線均線", "neutral"),
+                _profile_row("MA20 / MA60 / MA120", f"{_display(sma20, 2)} / {_display(sma60, 2)} / {_display(sma120, 2)}", "20日 / 60日 / 120日均線", "neutral"),
                 _profile_row("距 MA20", _display_signed_percent(_gap(close, sma20)), "判斷是否跌破短中線", "negative" if weak else "positive"),
                 _profile_row("距 MA60", _display_signed_percent(_gap(close, sma60)), "觀察中期趨勢強弱", "positive" if _gap(close, sma60) is not None and _gap(close, sma60) >= 0 else "neutral"),
-                _profile_bool_row("多頭排列", trend_up, "Close > MA20 > MA60", "尚未形成多頭排列"),
-                _profile_bool_row("短線轉強", short_up, "MA5 > MA20", "短線均線仍需觀察"),
-                _profile_bool_row("長線站上", long_up, "Close > MA120", "尚未站上 120 日均線"),
+                _profile_signal_row("多頭排列", trend_up, "Close > MA20 > MA60", "尚未形成多頭排列"),
+                _profile_signal_row("短線轉強", short_up, "MA5 > MA20", "短線均線仍需觀察"),
+                _profile_signal_row("長線站上", long_up, "Close > MA120", "尚未站上 120 日均線"),
             ],
         ),
         _profile_card(
             "動能與量能",
             "MACD、RSI、成交量",
             [
-                _profile_bool_row("MACD 偏多", macd_up, "MACD > Signal", "MACD 尚未站上訊號線"),
+                _profile_signal_row("MACD 偏多", macd_up, "MACD > Signal", "MACD 尚未站上訊號線", "🟢 偏多", "🔴 未偏多"),
                 _profile_row("RSI", _display(rsi, 1), "50～75 屬相對健康；82 以上視為過熱", "negative" if rsi_hot else "positive" if rsi_good else "neutral"),
-                _profile_bool_row("RSI 健康區", rsi_good, "RSI 介於 50～75", "RSI 不在健康動能區"),
-                _profile_row("RSI 過熱", "是" if rsi_hot else "否", "RSI > 82 會扣分", "negative" if rsi_hot else "neutral"),
+                _profile_signal_row("RSI 健康區", rsi_good, "RSI 介於 50～75", "RSI 不在健康動能區", "🟢 健康", "🔴 非健康"),
+                _profile_signal_row("RSI 過熱", not rsi_hot, "未進入過熱扣分區", "RSI > 82，視為過熱", "🟢 未過熱", "🔴 過熱"),
                 _profile_row("量能比", f"{_display(volume_ratio, 2)} 倍", "Volume / VOL20", "positive" if vol_up else "neutral"),
-                _profile_bool_row("爆量條件", vol_up, "Volume > VOL20 × 1.5", "量能未明顯放大"),
+                _profile_signal_row("爆量條件", vol_up, "Volume > VOL20 × 1.5", "量能未明顯放大", "🟢 放量", "🔴 未放量"),
                 _profile_row("ATR 波動", _display_percent(None if close in {None, 0} or atr is None else atr / close), "用於停損與風險距離", "neutral"),
                 _profile_row("Beta", _display(beta, 2), "相對大盤敏感度", "negative" if beta is not None and beta >= 1.2 else "neutral"),
             ],
@@ -1461,8 +1463,8 @@ def _market_profile(
                 _profile_row("推薦評分", f"{scorecard['total']} 分", scorecard["label"], "positive" if scorecard["total"] >= 75 else "negative" if scorecard["total"] < 45 else "neutral"),
                 _profile_row("風報比", _display(scorecard["reward_risk_ratio"], 2), "停利距離 / 停損距離", "positive" if (scorecard["reward_risk_ratio"] or 0) >= 1.5 else "neutral"),
                 _profile_row("入場 / 停損 / 停利", f"{_display(entry, 2)} / {_display(stop_loss, 2)} / {_display(take_profit, 2)}", "由風控模組依 ATR 推估", "neutral"),
-                _profile_bool_row("20日突破", breakout20, "Close ≥ 前一日 HIGH20", "尚未突破 20 日前高"),
-                _profile_bool_row("60日突破", breakout60, "Close ≥ 前一日 HIGH60", "尚未突破 60 日前高"),
+                _profile_breakout_row("20日突破", close, prev_high20, breakout20),
+                _profile_breakout_row("60日突破", close, prev_high60, breakout60),
             ],
         ),
         _profile_card(
@@ -1483,9 +1485,12 @@ def _market_profile(
                 _metric_profile_row("外資買賣超", _display_signed_share_lots(_number(institutional.get("foreign_net"))), _source_note(institutional, "TWSE/TPEx 三大法人"), _signed_tone(_number(institutional.get("foreign_net")))),
                 _metric_profile_row("投信買賣超", _display_signed_share_lots(_number(institutional.get("investment_trust_net"))), _source_note(institutional, "TWSE/TPEx 三大法人"), _signed_tone(_number(institutional.get("investment_trust_net")))),
                 _metric_profile_row("自營商買賣超", _display_signed_share_lots(_number(institutional.get("dealer_net"))), _source_note(institutional, "TWSE/TPEx 三大法人"), _signed_tone(_number(institutional.get("dealer_net")))),
-                _metric_profile_row("三大法人合計", _display_signed_share_lots(_number(institutional.get("total_net"))), "單位換算為張", _signed_tone(_number(institutional.get("total_net")))),
-                _metric_profile_row("資料市場", str(external.get("market") or "—"), _source_note(institutional, "上市/上櫃資料源")),
+                _metric_profile_row("三大法人合計", _display_signed_share_lots(_number(institutional.get("total_net"))), f"統計日：{institutional.get('date') or '—'}｜單位換算為張", _signed_tone(_number(institutional.get("total_net")))),
+                _metric_profile_row("累積資料", f"{len(institutional_history)} 日", f"目前已累積 {len(institutional_history)} 日，可切換 1/3/5/10 日檢視"),
             ],
+            key="institutional",
+            controls={"periods": [1, 3, 5, 10], "default": 1, "type": "institutional"},
+            history=institutional_history,
         ),
         _profile_card(
             "融資融券",
@@ -1496,8 +1501,12 @@ def _market_profile(
                 _metric_profile_row("融券餘額", _display_lot_units(_number(margin_data.get("short_balance"))), _source_note(margin_data, "TWSE/TPEx 融資融券餘額")),
                 _metric_profile_row("融券日增減", _display_signed_lot_units(_number(margin_data.get("short_change"))), "今日餘額 - 前日餘額", _signed_tone(_number(margin_data.get("short_change")), positive_is_good=False)),
                 _metric_profile_row("券資比", _display_percent(_number(margin_data.get("short_margin_ratio"))), "融券餘額 / 融資餘額", "negative" if (_number(margin_data.get("short_margin_ratio")) or 0) >= 0.3 else "neutral"),
-                _metric_profile_row("融資使用率", _display_percent_points(_number(margin_data.get("margin_usage_rate"))), "TPEx 提供；TWSE 暫以餘額為主"),
+                _metric_profile_row("融資使用率", _display_percent_points(_number(margin_data.get("margin_usage_rate"))), f"統計日：{margin_data.get('date') or '—'}｜TPEx 提供；TWSE 暫以餘額為主"),
+                _metric_profile_row("累積資料", f"{len(margin_history)} 日", f"目前已累積 {len(margin_history)} 日，可切換 1/3/5/10 日檢視"),
             ],
+            key="margin",
+            controls={"periods": [1, 3, 5, 10], "default": 1, "type": "margin"},
+            history=margin_history,
         ),
         _profile_card(
             "集保籌碼",
@@ -1514,16 +1523,84 @@ def _market_profile(
     ]
 
 
-def _profile_card(title: str, subtitle: str, rows: list[dict[str, object]]) -> dict[str, object]:
-    return {"title": title, "subtitle": subtitle, "rows": rows}
+def _profile_card(
+    title: str,
+    subtitle: str,
+    rows: list[dict[str, object]],
+    key: str | None = None,
+    controls: dict[str, object] | None = None,
+    history: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    card = {"title": title, "subtitle": subtitle, "rows": rows}
+    if key:
+        card["key"] = key
+    if controls:
+        card["controls"] = controls
+    if history is not None:
+        card["history"] = history
+    return card
 
 
 def _profile_row(label: str, value: str, note: str, tone: str) -> dict[str, object]:
     return {"label": label, "value": value, "note": note, "tone": tone}
 
 
+def _profile_signal_row(
+    label: str,
+    active: bool,
+    true_note: str,
+    false_note: str,
+    true_value: str = "🟢 成立",
+    false_value: str = "🔴 未成立",
+) -> dict[str, object]:
+    return _profile_row(label, true_value if active else false_value, true_note if active else false_note, "positive" if active else "negative")
+
+
 def _profile_bool_row(label: str, active: bool, true_note: str, false_note: str) -> dict[str, object]:
     return _profile_row(label, "成立" if active else "未成立", true_note if active else false_note, "positive" if active else "neutral")
+
+
+def _profile_breakout_row(label: str, close: float | None, previous_high: float | None, active: bool) -> dict[str, object]:
+    gap = _gap(close, previous_high)
+    note = f"目前 {_display(close, 2)} / 前高 {_display(previous_high, 2)} / 差距 {_display_signed_percent(gap)}"
+    return _profile_row(label, "🟢 已突破" if active else "🔴 未突破", note, "positive" if active else "negative")
+
+
+def _institutional_history(institutional: dict[str, object]) -> list[dict[str, object]]:
+    history = institutional.get("history")
+    rows = history if isinstance(history, list) else []
+    if not rows and institutional.get("date"):
+        rows = [institutional]
+    return [
+        {
+            "date": row.get("date"),
+            "foreign_net": _json_value(_number(row.get("foreign_net"))),
+            "investment_trust_net": _json_value(_number(row.get("investment_trust_net"))),
+            "dealer_net": _json_value(_number(row.get("dealer_net"))),
+            "total_net": _json_value(_number(row.get("total_net"))),
+        }
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def _margin_history(margin_data: dict[str, object]) -> list[dict[str, object]]:
+    history = margin_data.get("history")
+    rows = history if isinstance(history, list) else []
+    if not rows and margin_data.get("date"):
+        rows = [margin_data]
+    return [
+        {
+            "date": row.get("date"),
+            "margin_balance": _json_value(_number(row.get("margin_balance"))),
+            "margin_change": _json_value(_number(row.get("margin_change"))),
+            "short_balance": _json_value(_number(row.get("short_balance"))),
+            "short_change": _json_value(_number(row.get("short_change"))),
+            "short_margin_ratio": _json_value(_number(row.get("short_margin_ratio"))),
+        }
+        for row in rows
+        if isinstance(row, dict)
+    ]
 
 
 def _pending_profile_row(label: str, source: str) -> dict[str, object]:
@@ -3685,6 +3762,19 @@ def _stock_html(ticker: str, mode: str) -> str:
 	    .profile-row.negative strong { color: var(--red); }
 	    .profile-row.pending strong { color: #7c3aed; }
 	    .profile-row.pending { background: rgba(124,58,237,.04); margin: 0 -8px; padding-left: 8px; padding-right: 8px; border-radius: 12px; }
+	    .profile-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+	    .profile-controls { display: inline-flex; gap: 6px; padding: 4px; border-radius: 999px; background: rgba(219,234,254,.72); border: 1px solid rgba(37,99,235,.10); }
+	    .profile-controls button { border: 0; background: transparent; color: var(--muted); padding: 6px 9px; border-radius: 999px; font-size: 12px; font-weight: 900; cursor: pointer; }
+	    .profile-controls button.active { background: #2563eb; color: #fff; box-shadow: 0 8px 18px rgba(37,99,235,.20); }
+	    .profile-history { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(37,99,235,.12); }
+	    .profile-history-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; color: var(--muted); font-size: 13px; font-weight: 850; }
+	    .mini-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+	    .mini-table th, .mini-table td { padding: 7px 6px; border-bottom: 1px solid rgba(37,99,235,.08); white-space: nowrap; }
+	    .mini-table th { color: var(--muted); text-transform: none; letter-spacing: 0; }
+	    .mini-table td { color: var(--text); }
+	    .mini-table .positive { color: var(--green); font-weight: 900; }
+	    .mini-table .negative { color: var(--red); font-weight: 900; }
+	    .mini-table .neutral { color: var(--text); font-weight: 850; }
 	    .empty { color: var(--muted); padding: 28px; border: 1px dashed var(--line); border-radius: 20px; }
 	    @media (max-width: 1120px) { .app-shell { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; } .nav-list { grid-template-columns: repeat(3, 1fr); } .profile-grid { grid-template-columns: repeat(2, 1fr); } }
 	    @media (max-width: 980px) { .hero { display: block; } .hero a { display: inline-flex; margin-top: 16px; } .grid { grid-template-columns: repeat(2, 1fr); } .split { grid-template-columns: 1fr; } .chart-zoom { grid-template-columns: 1fr; } #chartWindowLabel { text-align: left; } }
@@ -3813,6 +3903,8 @@ def _stock_html(ticker: str, mode: str) -> str:
 	    let autoRefreshEnabled = true;
 	    let autoRefreshTimer = null;
 	    let isRefreshing = false;
+	    let profileCards = [];
+	    let profilePeriods = {};
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -3884,10 +3976,16 @@ def _stock_html(ticker: str, mode: str) -> str:
 	        profile.innerHTML = `<div class="empty">尚無延伸分析資料。</div>`;
 	        return;
 	      }
-	      profile.innerHTML = cards.map(card => `
+	      profileCards = cards;
+	      profile.innerHTML = cards.map((card, index) => `
 	        <article class="profile-card">
-	          <h3>${escapeHtml(card.title)}</h3>
-	          <p>${escapeHtml(card.subtitle)}</p>
+	          <div class="profile-card-head">
+	            <div>
+	              <h3>${escapeHtml(card.title)}</h3>
+	              <p>${escapeHtml(card.subtitle)}</p>
+	            </div>
+	            ${renderProfileControls(card, index)}
+	          </div>
 	          ${(card.rows || []).map(row => `
 	            <div class="profile-row ${escapeHtml(row.tone || "neutral")}">
 	              <span>${escapeHtml(row.label)}</span>
@@ -3897,8 +3995,110 @@ def _stock_html(ticker: str, mode: str) -> str:
 	              </div>
 	            </div>
 	          `).join("")}
+	          ${renderProfileHistory(card)}
 	        </article>
 	      `).join("");
+	    }
+
+	    function renderProfileControls(card, index) {
+	      const periods = card.controls?.periods || [];
+	      if (!periods.length) return "";
+	      const selected = profilePeriods[card.key] || card.controls?.default || periods[0];
+	      return `<div class="profile-controls" aria-label="${escapeHtml(card.title)} 天數切換">
+	        ${periods.map(days => `
+	          <button type="button" class="${Number(selected) === Number(days) ? "active" : ""}" onclick="setProfilePeriod(${index}, ${Number(days)})">${Number(days)}日</button>
+	        `).join("")}
+	      </div>`;
+	    }
+
+	    function setProfilePeriod(index, days) {
+	      const card = profileCards[index];
+	      if (!card?.key) return;
+	      profilePeriods[card.key] = Number(days);
+	      renderMarketProfile(profileCards);
+	    }
+
+	    function renderProfileHistory(card) {
+	      if (!card.controls?.type || !Array.isArray(card.history) || !card.history.length) return "";
+	      const selected = Number(profilePeriods[card.key] || card.controls.default || 1);
+	      const rows = card.history.slice(0, selected);
+	      if (card.controls.type === "institutional") return renderInstitutionalHistory(rows, selected, card.history.length);
+	      if (card.controls.type === "margin") return renderMarginHistory(rows, selected, card.history.length);
+	      return "";
+	    }
+
+	    function renderInstitutionalHistory(rows, selected, available) {
+	      const total = rows.reduce((sum, row) => sum + (Number(row.total_net) || 0), 0);
+	      return `<div class="profile-history">
+	        <div class="profile-history-summary">
+	          <span>近 ${selected} 日明細</span>
+	          <strong class="${toneClass(total)}">合計 ${formatShareLots(total)}</strong>
+	        </div>
+	        <div class="table-wrap"><table class="mini-table">
+	          <thead><tr><th>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th></tr></thead>
+	          <tbody>${rows.map(row => `
+	            <tr>
+	              <td>${escapeHtml(row.date || "—")}</td>
+	              <td class="${toneClass(row.foreign_net)}">${formatShareLots(row.foreign_net)}</td>
+	              <td class="${toneClass(row.investment_trust_net)}">${formatShareLots(row.investment_trust_net)}</td>
+	              <td class="${toneClass(row.dealer_net)}">${formatShareLots(row.dealer_net)}</td>
+	              <td class="${toneClass(row.total_net)}">${formatShareLots(row.total_net)}</td>
+	            </tr>
+	          `).join("")}</tbody>
+	        </table></div>
+	        <small>已累積 ${available} 日；若資料源尚未更新，會保留最近成功抓取結果。</small>
+	      </div>`;
+	    }
+
+	    function renderMarginHistory(rows, selected, available) {
+	      const marginChange = rows.reduce((sum, row) => sum + (Number(row.margin_change) || 0), 0);
+	      const shortChange = rows.reduce((sum, row) => sum + (Number(row.short_change) || 0), 0);
+	      return `<div class="profile-history">
+	        <div class="profile-history-summary">
+	          <span>近 ${selected} 日明細</span>
+	          <strong>資 ${formatLots(marginChange)}｜券 ${formatLots(shortChange)}</strong>
+	        </div>
+	        <div class="table-wrap"><table class="mini-table">
+	          <thead><tr><th>日期</th><th>融資餘額</th><th>資增減</th><th>融券餘額</th><th>券增減</th><th>券資比</th></tr></thead>
+	          <tbody>${rows.map(row => `
+	            <tr>
+	              <td>${escapeHtml(row.date || "—")}</td>
+	              <td>${formatAbsLots(row.margin_balance)}</td>
+	              <td class="${toneClass(row.margin_change)}">${formatLots(row.margin_change)}</td>
+	              <td>${formatAbsLots(row.short_balance)}</td>
+	              <td class="${toneClass(row.short_change, false)}">${formatLots(row.short_change)}</td>
+	              <td>${Number.isFinite(Number(row.short_margin_ratio)) ? `${(Number(row.short_margin_ratio) * 100).toFixed(1)}%` : "—"}</td>
+	            </tr>
+	          `).join("")}</tbody>
+	        </table></div>
+	        <small>已累積 ${available} 日；融資融券需等交易所更新後才會增加新日資料。</small>
+	      </div>`;
+	    }
+
+	    function toneClass(value, positiveIsGood = true) {
+	      const number = Number(value);
+	      if (!Number.isFinite(number) || number === 0) return "neutral";
+	      const good = positiveIsGood ? number > 0 : number < 0;
+	      return good ? "positive" : "negative";
+	    }
+
+	    function formatShareLots(value) {
+	      const number = Number(value);
+	      if (!Number.isFinite(number)) return "—";
+	      return formatLots(number / 1000);
+	    }
+
+	    function formatLots(value) {
+	      const number = Number(value);
+	      if (!Number.isFinite(number)) return "—";
+	      const sign = number > 0 ? "+" : number < 0 ? "-" : "";
+	      return `${sign}${Math.abs(number).toLocaleString(undefined, { maximumFractionDigits: 0 })} 張`;
+	    }
+
+	    function formatAbsLots(value) {
+	      const number = Number(value);
+	      if (!Number.isFinite(number)) return "—";
+	      return `${number.toLocaleString(undefined, { maximumFractionDigits: 0 })} 張`;
 	    }
 
 	    function renderIndicators(rows) {
