@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: tw-ai-quant
+    runtime: python
+    region: singapore
+    buildCommand: pip install -e .
+    startCommand: bash scripts/start_web.sh
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+    disk:
+      name: ai-quant-data
+      mountPath: /opt/render/project/src/artifacts_real
+      sizeGB: 5
