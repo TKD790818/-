@@ -27,6 +27,7 @@ DAYTRADE_CACHE_SECONDS = 25
 AI_BUY_THRESHOLD = 0.58
 AI_SELL_THRESHOLD = 0.42
 _DAYTRADE_CACHE: dict[tuple[str, str, int], tuple[float, dict[str, object]]] = {}
+_INTRADAY_SNAPSHOT_CACHE: dict[tuple[str, tuple[str, ...]], tuple[float, dict[str, dict[str, object]], str, str]] = {}
 TECHNICAL_FIELDS = [
     "sma_5",
     "sma_20",
@@ -106,9 +107,24 @@ def create_app(config_path: str = "configs/example.yml") -> FastAPI:
     def signals(mode: Literal["demo", "real"] = "real") -> list[dict[str, object]]:
         output_dir, _ = _paths(mode)
         records = _records(output_dir / "latest_risk_plan.csv")
+        config = load_config(app.state.config_path)
         feature_lookup = _latest_score_feature_lookup(output_dir)
-        group_lookup = ticker_group_map(load_config(app.state.config_path))
-        enriched = [_enrich_signal_record(record, feature_lookup, group_lookup) for record in records]
+        group_lookup = ticker_group_map(config)
+        tickers = [str(row.get("ticker")) for row in records if row.get("ticker")]
+        snapshots, source, warning = _intraday_snapshots(tickers, feature_lookup, mode)
+        risk_config = config.get("risk", {}) if isinstance(config.get("risk"), dict) else {}
+        updated_at = pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M:%S")
+        enriched = [
+            _apply_intraday_signal_snapshot(
+                _enrich_signal_record(record, feature_lookup, group_lookup),
+                snapshots.get(str(record.get("ticker")), {}),
+                risk_config,
+                source,
+                warning,
+                updated_at,
+            )
+            for record in records
+        ]
         return _sort_signal_records(enriched)
 
     @app.get("/api/daytrade")
@@ -458,8 +474,14 @@ def _intraday_snapshots(
 ) -> tuple[dict[str, dict[str, object]], str, str]:
     if not tickers:
         return {}, "no tickers", "目前沒有股票清單可計算。"
+    cache_key = (mode, tuple(sorted(dict.fromkeys(tickers))))
+    cached = _INTRADAY_SNAPSHOT_CACHE.get(cache_key)
+    now = monotonic()
+    if cached and now - cached[0] <= DAYTRADE_CACHE_SECONDS:
+        snapshots, source, warning = cached[1], cached[2], cached[3]
+        return {ticker: snapshot.copy() for ticker, snapshot in snapshots.items()}, source, warning
     if mode == "demo":
-        return _daily_fallback_snapshots(feature_lookup), "Demo daily fallback", ""
+        return _cache_intraday_snapshots(cache_key, _daily_fallback_snapshots(feature_lookup), "Demo daily fallback", "")
 
     try:
         import yfinance as yf
@@ -475,12 +497,32 @@ def _intraday_snapshots(
         )
         snapshots = _snapshots_from_yfinance(raw, tickers, feature_lookup)
         if snapshots:
-            return snapshots, "Yahoo Finance 1m", ""
+            return _cache_intraday_snapshots(cache_key, snapshots, "Yahoo Finance 1m", "")
     except Exception as exc:
         warning = f"盤中資料暫時無法取得，已改用日線備援：{exc}"
-        return _daily_fallback_snapshots(feature_lookup), "features.csv fallback", warning
+        return _cache_intraday_snapshots(cache_key, _daily_fallback_snapshots(feature_lookup), "features.csv fallback", warning)
 
-    return _daily_fallback_snapshots(feature_lookup), "features.csv fallback", "盤中資料暫無有效資料，已改用日線備援。"
+    return _cache_intraday_snapshots(
+        cache_key,
+        _daily_fallback_snapshots(feature_lookup),
+        "features.csv fallback",
+        "盤中資料暫無有效資料，已改用日線備援。",
+    )
+
+
+def _cache_intraday_snapshots(
+    cache_key: tuple[str, tuple[str, ...]],
+    snapshots: dict[str, dict[str, object]],
+    source: str,
+    warning: str,
+) -> tuple[dict[str, dict[str, object]], str, str]:
+    _INTRADAY_SNAPSHOT_CACHE[cache_key] = (
+        monotonic(),
+        {ticker: snapshot.copy() for ticker, snapshot in snapshots.items()},
+        source,
+        warning,
+    )
+    return snapshots, source, warning
 
 
 def _snapshots_from_yfinance(
@@ -864,6 +906,98 @@ def _enrich_signal_record(
     enriched["recommendation_score_detail"] = _recommendation_score_detail(enriched)
     enriched["composite_signal"] = _composite_signal(enriched)
     return enriched
+
+
+def _apply_intraday_signal_snapshot(
+    record: dict[str, object],
+    snapshot: dict[str, object],
+    risk_config: dict[str, object],
+    source: str,
+    warning: str,
+    updated_at: str,
+) -> dict[str, object]:
+    enriched = record.copy()
+    analysis_close = _number(enriched.get("close"))
+    current = _number(snapshot.get("current_price")) or analysis_close
+    if current is None:
+        return enriched
+
+    intraday_volume = _number(snapshot.get("intraday_volume"))
+    volume_ratio = _number(snapshot.get("volume_ratio"))
+    intraday_return = _number(snapshot.get("intraday_return"))
+    vwap = _number(snapshot.get("vwap"))
+    vwap_gap = _number(snapshot.get("vwap_gap"))
+
+    enriched["analysis_close"] = analysis_close
+    enriched["current_price"] = round(current, 2)
+    enriched["close"] = round(current, 2)
+    enriched["entry_price"] = round(current, 2)
+    enriched["intraday_source"] = source
+    enriched["intraday_updated_at"] = updated_at
+    enriched["intraday_warning"] = warning
+    enriched["intraday_synced"] = source == "Yahoo Finance 1m"
+    if intraday_return is not None:
+        enriched["intraday_return"] = intraday_return
+        enriched["daily_return"] = intraday_return
+    if intraday_volume is not None:
+        enriched["intraday_volume"] = intraday_volume
+        enriched["volume"] = intraday_volume
+    if volume_ratio is not None:
+        enriched["volume_ratio"] = volume_ratio
+        enriched["volume_ratio_20"] = volume_ratio
+    if vwap is not None:
+        enriched["intraday_vwap"] = vwap
+    if vwap_gap is not None:
+        enriched["vwap_gap"] = vwap_gap
+
+    _refresh_intraday_risk_prices(enriched, risk_config)
+    enriched["recommendation_score"] = _recommendation_score(enriched)
+    enriched["recommendation_score_detail"] = _recommendation_score_detail(enriched)
+    enriched["composite_signal"] = _composite_signal(enriched)
+    return enriched
+
+
+def _refresh_intraday_risk_prices(row: dict[str, object], risk_config: dict[str, object]) -> None:
+    current = _number(row.get("close"))
+    if current is None:
+        return
+
+    atr_multiplier = _number(risk_config.get("atr_stop_multiplier")) or 2.0
+    take_profit_r_multiple = _number(risk_config.get("take_profit_r_multiple")) or 2.0
+    capital = _number(risk_config.get("capital")) or 0
+    risk_per_trade = _number(risk_config.get("risk_per_trade")) or 0
+    max_position_pct = _number(risk_config.get("max_position_pct")) or 0
+    lot_size = int(_number(risk_config.get("lot_size")) or 1000)
+    atr = _number(row.get("atr_14"))
+    risk_per_share = None if atr is None else atr * atr_multiplier
+    if risk_per_share is None or risk_per_share <= 0:
+        original_risk = _number(row.get("risk_per_share"))
+        original_entry = _number(row.get("entry_price")) or _number(row.get("analysis_close"))
+        if original_risk is not None and original_entry not in {None, 0}:
+            risk_per_share = current * (original_risk / original_entry)
+    if risk_per_share is None or risk_per_share <= 0:
+        risk_per_share = current * 0.03
+
+    stop_loss = max(0, current - risk_per_share)
+    take_profit = current + risk_per_share * take_profit_r_multiple
+    row["risk_per_share"] = round(risk_per_share, 2)
+    row["stop_loss"] = round(stop_loss, 2)
+    row["take_profit"] = round(take_profit, 2)
+
+    if str(row.get("ml_signal", "HOLD")) != "BUY" or risk_per_share <= 0 or current <= 0:
+        row["position_size"] = 0
+        row["position_value"] = 0
+        row["portfolio_weight"] = 0
+        return
+
+    risk_budget = capital * risk_per_trade
+    risk_shares = risk_budget // risk_per_share if risk_budget > 0 else 0
+    capital_shares = (capital * max_position_pct) // current if capital > 0 and max_position_pct > 0 else 0
+    raw_size = int(min(risk_shares, capital_shares))
+    position_size = raw_size // lot_size * lot_size if lot_size > 0 else raw_size
+    row["position_size"] = int(max(position_size, 0))
+    row["position_value"] = round(row["position_size"] * current, 2)
+    row["portfolio_weight"] = None if capital <= 0 else row["position_value"] / capital
 
 
 def _normalize_probability_fields(row: dict[str, object]) -> None:
@@ -2208,6 +2342,25 @@ def _index_html() -> str:
       return dates.length ? dates[dates.length - 1] : "—";
     }
 
+    function signalSyncMeta(rows) {
+      const sourceRow = rows.find(row => row.intraday_source || row.intraday_updated_at) || {};
+      const source = sourceRow.intraday_source || "";
+      const updatedAt = sourceRow.intraday_updated_at || "";
+      const warning = sourceRow.intraday_warning || "";
+      const liveCount = rows.filter(row => row.intraday_synced).length;
+      const isLive = liveCount > 0 && source === "Yahoo Finance 1m";
+      const sourceText = isLive ? "Yahoo 1分線" : source ? "日線備援" : "尚未同步";
+      const freshness = updatedAt
+        ? `${isLive ? "🟢" : "🟡"} 盤中同步：${updatedAt}｜${sourceText}`
+        : "⚪ 尚無盤中同步";
+      const statusSuffix = updatedAt ? `｜盤中同步 ${sourceText}${warning ? "｜備援提醒" : ""}` : "";
+      return {
+        freshness,
+        hero: updatedAt ? (isLive ? "盤中同步" : "日線備援") : "未同步",
+        statusSuffix,
+      };
+    }
+
     function rowGroup(row) {
       return row.stock_group || "未分類";
     }
@@ -2326,17 +2479,18 @@ def _index_html() -> str:
 		    function renderSignals(rows, allRows = rows) {
 	      const table = document.getElementById("signals");
 	      const latestDate = latestSignalDate(allRows);
+	      const syncMeta = signalSyncMeta(allRows);
 	      const head = ["股名", "組群", "目前價", "綜合燈號", "推薦評分", "入場推薦價", "停損價", "停利價"];
 	      const keys = ["stock_name", "stock_group", "close", "composite_signal", "recommendation_score", "entry_price", "stop_loss", "take_profit"];
 	      if (!rows.length) {
 	        table.innerHTML = `<thead><tr>${head.map(x => `<th>${x}</th>`).join("")}</tr></thead>` +
 	          `<tbody><tr><td colspan="${head.length}">${escapeHtml(emptyGroupMessage())}</td></tr></tbody>`;
-	        document.getElementById("freshness").textContent = latestDate === "—" ? "⚪ 尚無 AI 訊號資料" : `🟢 AI資料日：${latestDate}`;
+	        document.getElementById("freshness").textContent = latestDate === "—" ? "⚪ 尚無 AI 訊號資料" : syncMeta.freshness;
 	        const configured = groupConfiguredCount(activeGroup);
 	        const countText = configured ? `0/${configured}` : "0";
-	        document.getElementById("status").textContent = `${activeGroup} ${countText} 檔（已分析/設定）｜AI資料日 ${latestDate}`;
+	        document.getElementById("status").textContent = `${activeGroup} ${countText} 檔（已分析/設定）｜AI資料日 ${latestDate}${syncMeta.statusSuffix}`;
 	        document.getElementById("heroStockCount").textContent = `${allRows.length}/${groupConfiguredCount("全部")} 檔`;
-	        document.getElementById("heroFreshness").textContent = latestDate;
+	        document.getElementById("heroFreshness").textContent = syncMeta.hero;
 	        return;
 	      }
 	      table.innerHTML = `<thead><tr>${head.map(x => `<th>${x}</th>`).join("")}</tr></thead>` +
@@ -2355,13 +2509,13 @@ def _index_html() -> str:
 	          }
 	          return `<td>${fmt(row[key], key)}</td>`;
 	        }).join("")}</tr>`).join("")}</tbody>`;
-	      document.getElementById("freshness").textContent = latestDate === "—" ? "⚪ 尚無 AI 訊號資料" : `🟢 AI資料日：${latestDate}`;
+	      document.getElementById("freshness").textContent = latestDate === "—" ? "⚪ 尚無 AI 訊號資料" : syncMeta.freshness;
 	      const configured = groupConfiguredCount(activeGroup);
 	      const totalConfigured = groupConfiguredCount("全部");
 	      const countText = configured ? `${rows.length}/${configured}` : `${rows.length}`;
-	      document.getElementById("status").textContent = `${activeGroup} ${countText} 檔（已分析/設定）｜AI資料日 ${latestDate}｜五構面評分`;
+	      document.getElementById("status").textContent = `${activeGroup} ${countText} 檔（已分析/設定）｜AI資料日 ${latestDate}${syncMeta.statusSuffix}｜五構面評分`;
 	      document.getElementById("heroStockCount").textContent = totalConfigured ? `${allRows.length}/${totalConfigured} 檔` : `${allRows.length} 檔`;
-	      document.getElementById("heroFreshness").textContent = latestDate;
+	      document.getElementById("heroFreshness").textContent = syncMeta.hero;
 	    }
 
 	    function modelStatusText(status) {
