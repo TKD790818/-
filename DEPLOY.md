@@ -13,8 +13,11 @@
    - `OPENAI_API_KEY`（目前可先留空）
 5. 上線後會取得 `https://你的服務.onrender.com`，手機可直接開啟。
 
-第一次啟動時，`scripts/start_web.sh` 會先嘗試建立一份雲端分析結果，再啟動網站。
+第一次啟動時，`scripts/start_web.sh` 會先啟動網站，避免免費機器因為先跑完整 AI 分析而記憶體不足。
 如果 Telegram 尚未填 Token 或 Chat ID，網站仍可正常部署，只是不會送出推播。
+
+Render Free 只有 512MB 記憶體，建議先讓網站直接啟動，不要在服務啟動前跑完整 AI 分析。
+若未來升級付費機器或改用背景工作，可設定環境變數 `RUN_STARTUP_ANALYSIS=true`，讓服務啟動前先嘗試建立分析結果。
 
 ## 重要提醒
 
