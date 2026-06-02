@@ -8,12 +8,13 @@
 2. 到 Render 建立 Web Service，連接 GitHub repository。
 3. 使用專案根目錄的 `render.yaml` 建立服務。
 4. 在 Render 環境變數填入：
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
+   - `TELEGRAM_BOT_TOKEN`（可先留空，之後要推播再補）
+   - `TELEGRAM_CHAT_ID`（可先留空，之後要推播再補）
    - `OPENAI_API_KEY`（目前可先留空）
 5. 上線後會取得 `https://你的服務.onrender.com`，手機可直接開啟。
 
 第一次啟動時，`scripts/start_web.sh` 會先嘗試建立一份雲端分析結果，再啟動網站。
+如果 Telegram 尚未填 Token 或 Chat ID，網站仍可正常部署，只是不會送出推播。
 
 ## 重要提醒
 

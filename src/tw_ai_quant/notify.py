@@ -51,7 +51,7 @@ def maybe_send_telegram(config: dict[str, Any], text: str) -> bool:
     bot_token = os.getenv(telegram_config["bot_token_env"], "")
     chat_id = os.getenv(telegram_config["chat_id_env"], "")
     if not bot_token or not chat_id:
-        raise RuntimeError("Telegram is enabled but token/chat id env vars are missing")
+        return False
 
     send_telegram_message(bot_token, chat_id, text)
     return True

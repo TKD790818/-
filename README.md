@@ -134,7 +134,7 @@ FastAPI 網站提供：
 - 模型：預設會比較 `random_forest`、`extra_trees`、`gradient_boosting`，依 `roc_auc` 選最佳模型；若安裝 `pip install -e ".[boosting]"`，可把 `lightgbm` 或 `xgboost` 加入 `model.candidates`
 - 情緒：目前內建中文詞典法，之後可替換成 OpenAI / 本地 LLM 分析新聞與法說逐字稿
 - 回測：目前是等權 BUY 訊號向量化回測，後續可擴充成再平衡、停損出場、資金水位與多策略組合
-- 推播：設定 `.env` 的 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，並把 `telegram.enabled` 改成 `true`
+- 推播：設定 `.env` 的 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` 後即可送出；未填時網站與分析仍會正常執行，只略過 Telegram
 
 ## 排程中心
 
