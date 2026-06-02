@@ -9,9 +9,9 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
-artifacts/
-artifacts_real/
-data/raw/
-data/processed/
-reports/
-reports_real/
+/artifacts/
+/artifacts_real/
+/data/raw/
+/data/processed/
+/reports/
+/reports_real/
